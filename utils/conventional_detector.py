@@ -1,145 +1,115 @@
 import numpy as np
-import networkx as nx
-from typing import List, Dict, Tuple, Set
-import logging
+import pandas as pd
+from typing import Dict, List, Tuple
 
-logger = logging.getLogger(__name__)
-
-class ConventionalDetector:
+class BankersAlgorithm:
     def __init__(self):
-        self.methods = {
-            "Wait-for Graph": self.wait_for_graph,
-            "Resource Allocation": self.resource_allocation_graph,
-            "Banker's Algorithm": self.bankers_algorithm
-        }
+        self.name = "Banker's Algorithm"
     
-    def detect_deadlock(self, processes: List[Dict], available: List[int], method: str = "Wait-for Graph") -> Tuple[bool, Dict]:
-        """
-        Detect deadlock using conventional methods
-        """
-        if method not in self.methods:
-            raise ValueError(f"Unknown method: {method}")
-        
-        return self.methods[method](processes, available)
-    
-    def wait_for_graph(self, processes: List[Dict], available: List[int]) -> Tuple[bool, Dict]:
-        """
-        Create wait-for graph and check for cycles
-        """
-        # Create a directed graph
-        G = nx.DiGraph()
-        
-        # Add process nodes
-        for process in processes:
-            G.add_node(f"P{process['id']}")
-        
-        # Add edges based on resource needs
-        for i, process in enumerate(processes):
-            for j, need in enumerate(process["need"]):
-                if need > 0 and available[j] < need:
-                    # This process is waiting for resource j
-                    # Find which process holds resource j
-                    for k, other_process in enumerate(processes):
-                        if i != k and other_process["allocation"][j] > 0:
-                            G.add_edge(f"P{process['id']}", f"P{other_process['id']}")
-                            break
-        
-        # Check for cycles
+    def detect_deadlock(self, transactions: pd.DataFrame) -> Dict:
+        """Traditional Banker's Algorithm for bank transactions"""
         try:
-            cycle = nx.find_cycle(G)
-            return True, {"cycle": cycle, "graph": G}
-        except nx.NetworkXNoCycle:
-            return False, {"graph": G}
-    
-    def resource_allocation_graph(self, processes: List[Dict], available: List[int]) -> Tuple[bool, Dict]:
-        """
-        Create resource allocation graph and check for cycles
-        """
-        G = nx.DiGraph()
-        num_resources = len(available)
-        
-        # Add nodes
-        for process in processes:
-            G.add_node(f"P{process['id']}", type="process")
-        
-        for j in range(num_resources):
-            G.add_node(f"R{j}", type="resource")
-        
-        # Add edges
-        for process in processes:
-            for j in range(num_resources):
-                # Allocation edges (resource -> process)
-                if process["allocation"][j] > 0:
-                    G.add_edge(f"R{j}", f"P{process['id']}")
-                
-                # Request edges (process -> resource)
-                if process["need"][j] > 0 and available[j] < process["need"][j]:
-                    G.add_edge(f"P{process['id']}", f"R{j}")
-        
-        # Check for cycles
-        try:
-            cycle = nx.find_cycle(G)
-            return True, {"cycle": cycle, "graph": G}
-        except nx.NetworkXNoCycle:
-            return False, {"graph": G}
-    
-    def bankers_algorithm(self, processes: List[Dict], available: List[int]) -> Tuple[bool, Dict]:
-        """
-        Implement Banker's algorithm for deadlock detection
-        """
-        work = available.copy()
-        finish = [False] * len(processes)
-        safe_sequence = []
-        
-        # Calculate need matrix
-        need = []
-        for process in processes:
-            need.append([process["max"][j] - process["allocation"][j] for j in range(len(available))])
-        
-        # Safety algorithm
-        while True:
-            found = False
-            for i in range(len(processes)):
-                if not finish[i] and all(need[i][j] <= work[j] for j in range(len(work))):
-                    # Process i can be executed
-                    for j in range(len(work)):
-                        work[j] += processes[i]["allocation"][j]
-                    finish[i] = True
-                    safe_sequence.append(f"P{processes[i]['id']}")
-                    found = True
+            num_processes = len(transactions)
+            if num_processes == 0:
+                return {'deadlock': False, 'confidence': 1.0, 'details': 'No transactions'}
             
-            if not found:
-                break
-        
-        # Check if all processes finished
-        if all(finish):
-            return False, {"sequence": safe_sequence}
-        else:
-            return True, {"sequence": []}
-    
-    def detect_from_matrices(self, allocation, max_demand, available):
-        """
-        Detect deadlock from matrices directly (for ML training)
-        """
-        num_processes = allocation.shape[0]
-        num_resources = allocation.shape[1]
-        
-        # Calculate need matrix
-        need = max_demand - allocation
-        
-        # Banker's algorithm
-        work = available.copy()
-        finish = np.zeros(num_processes, dtype=bool)
-        
-        for _ in range(num_processes):
-            found = False
-            for i in range(num_processes):
-                if not finish[i] and np.all(need[i] <= work):
-                    work += allocation[i]
-                    finish[i] = True
-                    found = True
+            # Simulate resource management
+            available = self._calculate_available_resources(transactions)
+            max_demand = self._calculate_max_demand(transactions)
+            allocation = self._calculate_allocation(transactions)
+            need = max_demand - allocation
+            
+            # Banker's safety algorithm
+            work = available.copy()
+            finish = [False] * num_processes
+            safe_sequence = []
+            
+            for _ in range(num_processes):
+                found = False
+                for i in range(num_processes):
+                    if not finish[i] and self._can_allocate(need[i], work):
+                        work += allocation[i]
+                        finish[i] = True
+                        safe_sequence.append(i)
+                        found = True
+                        break
+                
+                if not found:
                     break
-            if not found:
-                return True  # Deadlock detected
+            
+            is_safe = all(finish)
+            confidence = self._calculate_confidence(transactions, is_safe)
+            
+            return {
+                'deadlock': not is_safe,
+                'confidence': confidence,
+                'safe_sequence': safe_sequence if is_safe else [],
+                'completion_rate': sum(finish) / num_processes,
+                'method': 'Bankers Algorithm',
+                'factors': {
+                    'resource_utilization': self._calculate_utilization(allocation, available),
+                    'contention_level': transactions['concurrent_sessions'].mean() / 10.0,
+                    'complexity_score': transactions['tables_locked'].mean() / 5.0
+                }
+            }
+        except Exception as e:
+            return {'deadlock': False, 'confidence': 0.0, 'error': str(e)}
+    
+    def _calculate_available_resources(self, transactions):
+        """Calculate available system resources"""
+        max_sessions = 50
+        max_tables = 20
+        max_connections = 100
         
-        return False  # No deadlock
+        used_sessions = transactions['concurrent_sessions'].sum()
+        used_tables = transactions['tables_locked'].sum()
+        used_connections = len(transactions) * 2  # Approximate connections
+        
+        return np.array([
+            max(1, max_sessions - used_sessions),
+            max(1, max_tables - used_tables),
+            max(1, max_connections - used_connections)
+        ])
+    
+    def _calculate_max_demand(self, transactions):
+        """Calculate maximum resource demand"""
+        demands = []
+        for _, tx in transactions.iterrows():
+            session_demand = min(tx['concurrent_sessions'] * 1.5, 10)
+            table_demand = min(tx['tables_locked'] + 1, 6)
+            connection_demand = 2  # Base connection demand
+            demands.append([session_demand, table_demand, connection_demand])
+        
+        return np.array(demands)
+    
+    def _calculate_allocation(self, transactions):
+        """Calculate current resource allocation"""
+        allocations = []
+        for _, tx in transactions.iterrows():
+            session_alloc = tx['concurrent_sessions']
+            table_alloc = tx['tables_locked']
+            connection_alloc = 1  # Base connection allocation
+            allocations.append([session_alloc, table_alloc, connection_alloc])
+        
+        return np.array(allocations)
+    
+    def _can_allocate(self, need, work):
+        """Check if resources can be allocated"""
+        return all(need <= work)
+    
+    def _calculate_confidence(self, transactions, is_safe):
+        """Calculate confidence score"""
+        base_confidence = 0.95  # High confidence for deterministic algorithm
+        
+        # Adjust based on system load
+        load_factor = transactions['concurrent_sessions'].mean() / 10.0
+        complexity_factor = transactions['tables_locked'].mean() / 5.0
+        
+        confidence = base_confidence * (1 - load_factor * 0.2) * (1 - complexity_factor * 0.1)
+        return max(0.7, min(confidence, 1.0))
+    
+    def _calculate_utilization(self, allocation, available):
+        """Calculate resource utilization"""
+        total_allocated = np.sum(allocation, axis=0)
+        total_resources = total_allocated + available
+        return np.mean(total_allocated / total_resources)

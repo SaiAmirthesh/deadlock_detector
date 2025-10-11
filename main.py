@@ -1,356 +1,482 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
-import time
+import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import plotly.express as px
-from utils.conventional_detector import ConventionalDetector
-from utils.ml_detector import MLDetector
+import time
+import sys
+import os
+
+# Add utils to path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
+sys.path.append(os.path.join(os.path.dirname(__file__), 'data'))
+
+from data.data_loader import BankDataLoader
+from utils.conventional_detector import BankersAlgorithm
+from utils.ml_detector import MLDeadlockDetector
 from utils.hybrid_detector import HybridDetector
-from utils.wait_for_graph import WaitForGraph
-from utils.visualization import Visualization
-import logging
+from utils.visualization import ResultsVisualizer
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-
-# Set page config
+# Page configuration
 st.set_page_config(
-    page_title="Hybrid Deadlock Detection System",
-    page_icon="🔒",
+    page_title="Bank Statement Deadlock Analyzer",
+    page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Load custom CSS
-try:
-    with open("assets/style.css") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-except:
-    st.markdown("""
-    <style>
-    .main { padding: 2rem; }
-    .stButton>button { width: 100%; border-radius: 8px; }
-    .metric-card { border-radius: 10px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); padding: 1.5rem; }
-    </style>
-    """, unsafe_allow_html=True)
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border-left: 4px solid #1f77b4;
+        margin-bottom: 1rem;
+    }
+    .deadlock-detected {
+        border-left: 4px solid #ff4b4b !important;
+        background: #fff5f5;
+    }
+    .no-deadlock {
+        border-left: 4px solid #00d26a !important;
+        background: #f0fff4;
+    }
+    .section-header {
+        border-bottom: 2px solid #1f77b4;
+        padding-bottom: 0.5rem;
+        margin: 2rem 0 1rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-class DeadlockDetectionApp:
+class BankStatementAnalyzer:
     def __init__(self):
-        self.conventional_detector = ConventionalDetector()
-        self.ml_detector = MLDetector()
+        self.data_loader = BankDataLoader()
+        self.bankers = BankersAlgorithm()
+        self.ml_detector = MLDeadlockDetector()
         self.hybrid_detector = HybridDetector()
-        self.graph_visualizer = WaitForGraph()
-        self.visualization = Visualization()
+        self.visualizer = ResultsVisualizer()
+        
+        # Load data
+        self.transactions = self.load_data()
         
         # Initialize session state
-        if "system_state" not in st.session_state:
-            st.session_state.system_state = self._initialize_system()
-        if "detection_history" not in st.session_state:
-            st.session_state.detection_history = []
-        if "method_performance" not in st.session_state:
-            st.session_state.method_performance = {
-                "Wait-for Graph": {"accuracy": 0.92, "speed": 0.85},
-                "Resource Allocation": {"accuracy": 0.88, "speed": 0.78},
-                "Banker's Algorithm": {"accuracy": 0.95, "speed": 0.65},
-                "Random Forest": {"accuracy": 0.96, "speed": 0.92},
-                "XGBoost": {"accuracy": 0.97, "speed": 0.94},
-                "Hybrid": {"accuracy": 0.98, "speed": 0.90}
-            }
+        if 'results' not in st.session_state:
+            st.session_state.results = None
+        if 'comparison_history' not in st.session_state:
+            st.session_state.comparison_history = []
+        if 'ml_trained' not in st.session_state:
+            st.session_state.ml_trained = False
     
-    def _initialize_system(self):
-        """Initialize a default system state"""
-        return {
-            "processes": [
-                {"id": 0, "allocation": [1, 0, 0], "max": [1, 2, 1], "need": [0, 2, 1]},
-                {"id": 1, "allocation": [0, 1, 0], "max": [2, 1, 1], "need": [2, 0, 1]},
-                {"id": 2, "allocation": [0, 0, 1], "max": [1, 1, 2], "need": [1, 1, 1]}
-            ],
-            "available": [1, 1, 1],
-            "total_resources": [2, 2, 2]
-        }
+    def load_data(self):
+        """Load bank statement data"""
+        # Update this path to your actual Excel file
+        excel_file_path = "data/bank_statement.xlsx"  # Change this path
+        return self.data_loader.load_bank_statement_data(excel_file_path)
     
-    def render_sidebar(self):
-        """Render the sidebar controls"""
-        with st.sidebar:
-            st.header("🔧 System Configuration")
-            
-            # Process configuration
-            st.subheader("Process Configuration")
-            num_processes = st.slider("Number of Processes", 2, 10, 3)
-            num_resources = st.slider("Number of Resource Types", 2, 5, 3)
-            
-            # Resource configuration
-            st.subheader("Resource Configuration")
-            total_resources = []
-            for i in range(num_resources):
-                total_resources.append(st.number_input(f"Total R{i}", 1, 10, 2, key=f"total_{i}"))
-            
-            # Method selection
-            st.subheader("Detection Methods")
-            methods = st.multiselect(
-                "Select methods to compare",
-                ["Wait-for Graph", "Resource Allocation", "Banker's Algorithm", "Random Forest", "XGBoost", "Hybrid"],
-                ["Wait-for Graph", "Random Forest", "Hybrid"]
-            )
-            
-            # Simulation controls
-            st.subheader("Simulation Controls")
-            if st.button("▶️ Run Simulation", type="primary"):
-                self.run_simulation(methods, num_processes, num_resources, total_resources)
-            
-            if st.button("🔄 Reset System"):
-                st.session_state.system_state = self._initialize_system()
-                st.session_state.detection_history = []
-                st.rerun()
+    def train_ml_models(self):
+        """Train ML models on the dataset"""
+        with st.spinner("Training ML models on bank statement data..."):
+            try:
+                results = self.ml_detector.train_models(self.transactions)
+                if results:
+                    st.session_state.ml_trained = True
+                    st.success("ML models trained successfully!")
+                    return True
+                else:
+                    st.error("Failed to train ML models")
+                    return False
+            except Exception as e:
+                st.error(f"Error training ML models: {str(e)}")
+                return False
     
-    def run_simulation(self, methods, num_processes, num_resources, total_resources):
-        """Run the deadlock detection simulation"""
-        # Generate a random system state
-        system_state = self.generate_system_state(num_processes, num_resources, total_resources)
-        st.session_state.system_state = system_state
-        
-        # Run detection with all selected methods
+    def run_detection(self, transaction_batch, methods):
+        """Run deadlock detection with selected methods"""
         results = {}
+        
         for method in methods:
             start_time = time.time()
             
-            if method in ["Wait-for Graph", "Resource Allocation", "Banker's Algorithm"]:
-                deadlock, details = self.conventional_detector.detect_deadlock(
-                    system_state["processes"], system_state["available"], method
-                )
-            elif method in ["Random Forest", "XGBoost"]:
-                deadlock, details = self.ml_detector.detect_deadlock(
-                    system_state, method
-                )
-            else:  # Hybrid
-                deadlock, details = self.hybrid_detector.detect_deadlock(system_state)
-            
-            detection_time = time.time() - start_time
-            
-            results[method] = {
-                "deadlock": deadlock,
-                "details": details,
-                "time": detection_time
-            }
+            try:
+                if method == 'Bankers Algorithm':
+                    result = self.bankers.detect_deadlock(transaction_batch)
+                elif method == 'Random Forest':
+                    result = self.ml_detector.detect_rf(transaction_batch)
+                elif method == 'XGBoost':
+                    result = self.ml_detector.detect_xgb(transaction_batch)
+                elif method == 'Hybrid':
+                    result = self.hybrid_detector.detect(transaction_batch)
+                else:
+                    continue
+                
+                result['time'] = time.time() - start_time
+                results[method] = result
+                
+            except Exception as e:
+                results[method] = {
+                    'deadlock': False,
+                    'confidence': 0.0,
+                    'error': str(e),
+                    'time': 0,
+                    'method': method
+                }
         
-        # Store results in history
-        st.session_state.detection_history.append({
-            "timestamp": time.time(),
-            "system_state": system_state,
-            "results": results
-        })
+        return results
     
-    def generate_system_state(self, num_processes, num_resources, total_resources):
-        """Generate a random system state for simulation"""
-        processes = []
-        available = total_resources.copy()
-        
-        for i in range(num_processes):
-            # Random allocation (some resources may be allocated)
-            allocation = [np.random.randint(0, max_res // 2 + 1) for max_res in total_resources]
+    def render_sidebar(self):
+        """Render sidebar controls"""
+        with st.sidebar:
+            st.markdown("## 🏦 Bank Statement Analyzer")
             
-            # Calculate maximum demand (allocation + random additional need)
-            max_demand = [
-                allocation[j] + np.random.randint(0, total_resources[j] - allocation[j] + 1)
-                for j in range(num_resources)
-            ]
+            # Data overview
+            if hasattr(self, 'transactions') and self.transactions is not None:
+                st.metric("Total Transactions", len(self.transactions))
+                deadlock_rate = self.transactions['deadlock_occurred'].mean() if 'deadlock_occurred' in self.transactions.columns else 0
+                st.metric("Deadlock Rate", f"{deadlock_rate:.1%}")
+            else:
+                st.metric("Total Transactions", 0)
+                st.metric("Deadlock Rate", "0%")
             
-            # Calculate need
-            need = [max_demand[j] - allocation[j] for j in range(num_resources)]
+            st.markdown("---")
+            st.markdown("### 🔧 Analysis Settings")
             
-            processes.append({
-                "id": i,
-                "allocation": allocation,
-                "max": max_demand,
-                "need": need
+            # Batch size
+            batch_size = st.slider("Transaction Batch Size", 10, 100, 30)
+            
+            # Transaction filters
+            st.markdown("#### Transaction Filters")
+            
+            # Transaction types
+            if hasattr(self, 'transactions') and self.transactions is not None and 'transaction_type' in self.transactions.columns:
+                available_types = self.transactions['transaction_type'].unique().tolist()
+                selected_types = st.multiselect(
+                    "Transaction Types",
+                    options=available_types,
+                    default=available_types[:3] if available_types else []
+                )
+            else:
+                selected_types = []
+                st.info("No transaction types available")
+            
+            # Amount range
+            if hasattr(self, 'transactions') and self.transactions is not None and 'amount' in self.transactions.columns:
+                max_amount = self.transactions['amount'].max()
+                amount_range = st.slider(
+                    "Amount Range",
+                    0, int(max_amount), (0, int(max_amount * 0.7))
+                )
+            else:
+                amount_range = (0, 10000)
+                st.slider("Amount Range", 0, 10000, (0, 5000))
+            
+            # Method selection
+            st.markdown("#### Detection Methods")
+            available_methods = ['Bankers Algorithm', 'Random Forest', 'XGBoost', 'Hybrid']
+            selected_methods = st.multiselect(
+                "Select Methods to Compare",
+                options=available_methods,
+                default=['Bankers Algorithm', 'Hybrid']  # Default to methods that don't require training
+            )
+            
+            # ML training
+            if not st.session_state.ml_trained and any(m in selected_methods for m in ['Random Forest', 'XGBoost']):
+                if st.button("🔄 Train ML Models", type="secondary", use_container_width=True):
+                    self.train_ml_models()
+            
+            # Run analysis button
+            if st.button("🚀 Analyze for Deadlocks", type="primary", use_container_width=True):
+                filters = {
+                    'transaction_types': selected_types,
+                    'amount_range': amount_range,
+                }
+                self.run_analysis(batch_size, filters, selected_methods)
+            
+            st.markdown("---")
+            if st.button("🔄 Reset Analysis", type="secondary"):
+                st.session_state.results = None
+                st.rerun()
+    
+    def run_analysis(self, batch_size, filters, methods):
+        """Run the analysis with given parameters"""
+        try:
+            # Get transaction batch
+            batch = self.data_loader.get_transaction_batch(self.transactions, batch_size, filters)
+            
+            if len(batch) == 0:
+                st.error("No transactions match the selected filters!")
+                return
+            
+            # Run detection
+            with st.spinner(f"Analyzing {len(batch)} transactions for deadlocks..."):
+                results = self.run_detection(batch, methods)
+            
+            st.session_state.results = results
+            st.session_state.current_batch = batch
+            
+            # Store for comparison
+            st.session_state.comparison_history.append({
+                'timestamp': time.time(),
+                'batch_size': len(batch),
+                'methods': methods,
+                'results': results
             })
             
-            # Update available resources
-            available = [available[j] - allocation[j] for j in range(num_resources)]
-        
-        return {
-            "processes": processes,
-            "available": available,
-            "total_resources": total_resources
-        }
+        except Exception as e:
+            st.error(f"Error during analysis: {str(e)}")
     
-    def render_main_content(self):
-        """Render the main content area"""
-        st.title("🔒 Hybrid Deadlock Detection System")
-        st.markdown("Compare traditional algorithms with ML approaches for deadlock detection")
+    def render_main(self):
+        """Render main content"""
+        st.markdown('<h1 class="main-header">🏦 Bank Statement Deadlock Analyzer</h1>', unsafe_allow_html=True)
+        st.markdown("""
+        Analyze your bank statement transactions for potential database deadlocks using advanced detection algorithms.
+        """)
         
-        # Display current system state
-        st.header("Current System State")
-        self.render_system_state()
-        
-        # Display detection results if available
-        if st.session_state.detection_history:
-            latest_result = st.session_state.detection_history[-1]
-            st.header("Detection Results")
-            self.render_detection_results(latest_result)
-            
-            # Display performance comparison
-            st.header("Method Performance Comparison")
-            self.render_performance_comparison()
-            
-            # Display wait-for graph
-            st.header("Wait-for Graph Visualization")
-            self.render_wait_for_graph(latest_result["system_state"])
+        if st.session_state.results:
+            self.render_quick_results()
+            self.render_detailed_analysis()
+            self.render_method_comparison()
+        else:
+            self.render_welcome_screen()
     
-    def render_system_state(self):
-        """Render the current system state"""
-        system_state = st.session_state.system_state
+    def render_quick_results(self):
+        """Render quick overview results"""
+        st.markdown('<div class="section-header">📊 Quick Results</div>', unsafe_allow_html=True)
         
-        col1, col2, col3 = st.columns(3)
+        results = st.session_state.results
+        batch = st.session_state.current_batch
         
-        with col1:
-            st.subheader("Processes")
-            process_data = []
-            for process in system_state["processes"]:
-                process_data.append({
-                    "Process": f"P{process['id']}",
-                    "Allocation": str(process['allocation']),
-                    "Max": str(process['max']),
-                    "Need": str(process['need'])
-                })
-            st.dataframe(pd.DataFrame(process_data), use_container_width=True)
-        
-        with col2:
-            st.subheader("Resources")
-            resource_data = {
-                "Resource": [f"R{i}" for i in range(len(system_state["available"]))],
-                "Total": system_state["total_resources"],
-                "Available": system_state["available"]
-            }
-            st.dataframe(pd.DataFrame(resource_data), use_container_width=True)
-        
-        with col3:
-            st.subheader("System Metrics")
-            total_processes = len(system_state["processes"])
-            total_resources = sum(system_state["total_resources"])
-            allocated = sum([sum(process['allocation']) for process in system_state["processes"]])
-            utilization = allocated / total_resources * 100 if total_resources > 0 else 0
-            
-            st.metric("Processes", total_processes)
-            st.metric("Total Resources", total_resources)
-            st.metric("Resource Utilization", f"{utilization:.1f}%")
-    
-    def render_detection_results(self, result):
-        """Render the detection results"""
-        system_state = result["system_state"]
-        results = result["results"]
-        
-        # Create results cards
+        # Results cards
         cols = st.columns(len(results))
-        
-        for i, (method, data) in enumerate(results.items()):
-            with cols[i]:
-                st.markdown(f"<div class='metric-card'>", unsafe_allow_html=True)
-                st.subheader(method)
+        for idx, (method, result) in enumerate(results.items()):
+            with cols[idx]:
+                deadlock = result['deadlock']
+                confidence = result.get('confidence', 0)
+                processing_time = result.get('time', 0)
                 
-                if data["deadlock"]:
-                    st.error("🚨 Deadlock Detected")
-                else:
-                    st.success("✅ No Deadlock")
+                card_class = "deadlock-detected" if deadlock else "no-deadlock"
+                icon = "🔴" if deadlock else "🟢"
+                status = "DEADLOCK" if deadlock else "SAFE"
                 
-                st.caption(f"Time: {data['time']*1000:.2f} ms")
-                st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card {card_class}">
+                    <h3 style="margin: 0; color: {'#ff4b4b' if deadlock else '#00d26a'}">{method}</h3>
+                    <h2 style="margin: 10px 0; font-size: 1.5rem;">{icon} {status}</h2>
+                    <p style="margin: 5px 0;"><b>Confidence:</b> {confidence:.1%}</p>
+                    <p style="margin: 5px 0;"><b>Time:</b> {processing_time:.3f}s</p>
+                </div>
+                """, unsafe_allow_html=True)
         
-        # Show detailed results in expanders
-        with st.expander("Detailed Results"):
-            for method, data in results.items():
-                st.subheader(method)
-                if "details" in data and data["details"]:
-                    if method in ["Wait-for Graph", "Resource Allocation"] and "cycle" in data["details"]:
-                        st.write("Cycle detected:", data["details"]["cycle"])
-                    elif method == "Banker's Algorithm" and "sequence" in data["details"]:
-                        if data["details"]["sequence"]:
-                            st.write("Safe sequence:", data["details"]["sequence"])
-                        else:
-                            st.write("No safe sequence exists")
-                    elif method in ["Random Forest", "XGBoost"] and "confidence" in data["details"]:
-                        st.write(f"Confidence: {data['details']['confidence']:.2%}")
-                    elif method == "Hybrid":
-                        st.write("Method used:", data["details"].get("method", "N/A"))
-                        if "confidence" in data["details"]:
-                            st.write(f"Confidence: {data['details']['confidence']:.2%}")
-                st.divider()
+        # Batch statistics
+        st.markdown("#### 📈 Batch Statistics")
+        stat_cols = st.columns(4)
+        
+        with stat_cols[0]:
+            st.metric("Transactions Analyzed", len(batch))
+        with stat_cols[1]:
+            total_amount = batch['amount'].sum() if 'amount' in batch.columns else 0
+            st.metric("Total Amount", f"${total_amount:,.0f}")
+        with stat_cols[2]:
+            if 'concurrent_sessions' in batch.columns:
+                avg_sessions = batch['concurrent_sessions'].mean()
+                st.metric("Avg Sessions", f"{avg_sessions:.1f}")
+            else:
+                st.metric("Avg Sessions", "N/A")
+        with stat_cols[3]:
+            if 'deadlock_occurred' in batch.columns:
+                actual_deadlocks = batch['deadlock_occurred'].sum()
+                st.metric("Deadlock Risk", f"{actual_deadlocks/len(batch):.1%}")
+            else:
+                st.metric("Deadlock Risk", "N/A")
     
-    def render_performance_comparison(self):
-        """Render performance comparison charts"""
-        performance = st.session_state.method_performance
+    def render_detailed_analysis(self):
+        """Render detailed analysis"""
+        st.markdown('<div class="section-header">🔍 Detailed Analysis</div>', unsafe_allow_html=True)
         
-        # Create accuracy comparison chart
-        methods = list(performance.keys())
-        accuracy = [performance[m]["accuracy"] for m in methods]
-        speed = [performance[m]["speed"] for m in methods]
+        results = st.session_state.results
+        batch = st.session_state.current_batch
         
-        fig = make_subplots(rows=1, cols=2, subplot_titles=("Accuracy Comparison", "Speed Comparison"))
-        
-        fig.add_trace(
-            go.Bar(x=methods, y=accuracy, name="Accuracy", marker_color="blue"),
-            row=1, col=1
-        )
-        
-        fig.add_trace(
-            go.Bar(x=methods, y=speed, name="Speed", marker_color="green"),
-            row=1, col=2
-        )
-        
-        fig.update_layout(height=400, showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Show historical accuracy if available
-        if len(st.session_state.detection_history) > 1:
-            st.subheader("Historical Performance")
-            self.render_historical_performance()
-    
-    def render_historical_performance(self):
-        """Render historical performance data"""
-        history = st.session_state.detection_history
-        
-        # Count correct detections for each method
-        method_correct = {method: 0 for method in st.session_state.method_performance.keys()}
-        method_total = {method: 0 for method in st.session_state.method_performance.keys()}
-        
-        for detection in history:
-            # Determine ground truth (use hybrid as reference)
-            ground_truth = detection["results"].get("Hybrid", {}).get("deadlock", False)
+        # Method-specific details in tabs
+        if results:
+            tabs = st.tabs([f"{method} Details" for method in results.keys()])
             
-            for method, result in detection["results"].items():
-                if method in method_total:
-                    method_total[method] += 1
-                    if result["deadlock"] == ground_truth:
-                        method_correct[method] += 1
+            for idx, (method, result) in enumerate(results.items()):
+                with tabs[idx]:
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.subheader(f"{method} Analysis")
+                        
+                        if 'error' in result:
+                            st.error(f"**Error:** {result['error']}")
+                        else:
+                            # Key metrics
+                            st.write(f"**Confidence Score:** {result.get('confidence', 0):.3f}")
+                            st.write(f"**Processing Time:** {result.get('time', 0):.4f} seconds")
+                            
+                            # Hybrid method details
+                            if 'method_used' in result:
+                                st.write(f"**Method Used:** {result['method_used']}")
+                                st.write(f"**Decision Reason:** {result.get('decision_reason', 'N/A')}")
+                            
+                            # Traditional method details
+                            if 'safe_sequence' in result:
+                                if result['safe_sequence']:
+                                    st.write(f"**Safe Sequence:** {len(result['safe_sequence'])} transactions can proceed safely")
+                                else:
+                                    st.write("**Safe Sequence:** No safe sequence found")
+                            
+                            # Key factors
+                            if 'factors' in result:
+                                st.write("**Key Factors Influencing Detection:**")
+                                for factor, weight in result['factors'].items():
+                                    st.write(f"- {factor.replace('_', ' ').title()}: {weight:.3f}")
+                    
+                    with col2:
+                        # Quick stats card
+                        st.markdown("""
+                        <div style="background: #f0f2f6; padding: 1rem; border-radius: 10px;">
+                            <h4>Quick Stats</h4>
+                        """, unsafe_allow_html=True)
+                        
+                        st.metric("Deadlock", "Detected" if result['deadlock'] else "Not Detected")
+                        st.metric("Confidence", f"{result.get('confidence', 0):.1%}")
+                        
+                        if 'completion_rate' in result:
+                            st.metric("Completion Rate", f"{result['completion_rate']:.1%}")
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
         
-        # Calculate accuracy
-        accuracy_data = {
-            "Method": [],
-            "Accuracy": [],
-            "Tests": []
+        # Transaction batch preview
+        st.markdown("#### 📋 Transaction Batch Preview")
+        
+        # Show relevant columns
+        display_columns = ['transaction_details', 'transaction_type', 'amount', 
+                          'concurrent_sessions', 'tables_locked', 'deadlock_occurred']
+        available_columns = [col for col in display_columns if col in batch.columns]
+        
+        if available_columns:
+            st.dataframe(batch[available_columns].head(10), use_container_width=True)
+        else:
+            st.info("No transaction details available for display")
+        
+        # Visualization
+        st.markdown("#### 📊 Transaction Analysis")
+        try:
+            fig = self.visualizer.create_transaction_analysis(batch)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not generate visualization: {e}")
+    
+    def render_method_comparison(self):
+        """Render method comparison"""
+        st.markdown('<div class="section-header">⚖️ Method Comparison</div>', unsafe_allow_html=True)
+        
+        results = st.session_state.results
+        
+        # Performance comparison chart
+        try:
+            fig = self.visualizer.create_method_comparison(results)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating comparison chart: {e}")
+        
+        # Feature importance
+        st.markdown("#### 🎯 Key Deadlock Indicators")
+        
+        # Common deadlock factors
+        common_factors = {
+            'High Transaction Amount': 0.25,
+            'Multiple Concurrent Sessions': 0.22,
+            'Complex Transaction Type': 0.18,
+            'Multiple Tables Locked': 0.15,
+            'Long Processing Time': 0.12,
+            'System Load': 0.08
         }
         
-        for method in method_total:
-            if method_total[method] > 0:
-                accuracy_data["Method"].append(method)
-                accuracy_data["Accuracy"].append(method_correct[method] / method_total[method])
-                accuracy_data["Tests"].append(method_total[method])
-        
-        fig = px.bar(accuracy_data, x="Method", y="Accuracy", color="Method",
-                    title="Historical Accuracy by Method")
-        st.plotly_chart(fig, use_container_width=True)
+        fig_importance = px.bar(
+            x=list(common_factors.values()),
+            y=list(common_factors.keys()),
+            orientation='h',
+            title='Common Deadlock Risk Factors',
+            labels={'x': 'Importance Weight', 'y': 'Risk Factors'}
+        )
+        st.plotly_chart(fig_importance, use_container_width=True)
     
-    def render_wait_for_graph(self, system_state):
-        """Render the wait-for graph visualization"""
-        graph_html = self.graph_visualizer.generate_graph(system_state)
-        st.components.v1.html(graph_html, height=600)
+    def render_welcome_screen(self):
+        """Render welcome screen"""
+        st.markdown("""
+        ## Welcome to Bank Statement Deadlock Analyzer
+        
+        This system analyzes your bank statement transactions to detect potential database deadlocks using:
+        
+        - **Traditional Method**: Banker's Algorithm for resource allocation analysis
+        - **ML Methods**: Random Forest & XGBoost for pattern recognition  
+        - **Hybrid Approach**: Intelligent method selection based on data characteristics
+        
+        ### 🎯 How to Use:
+        1. **Configure** transaction filters in the sidebar
+        2. **Select** detection methods to compare
+        3. **Run** the analysis to detect potential deadlocks
+        4. **Review** results and method comparisons
+        
+        ### 📊 Your Data Overview:
+        """)
+        
+        # Data overview
+        if hasattr(self, 'transactions') and self.transactions is not None:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Total Transactions", len(self.transactions))
+            with col2:
+                if 'account_no' in self.transactions.columns:
+                    unique_accounts = self.transactions['account_no'].nunique()
+                    st.metric("Unique Accounts", unique_accounts)
+                else:
+                    st.metric("Unique Accounts", "N/A")
+            with col3:
+                if 'deadlock_occurred' in self.transactions.columns:
+                    deadlock_rate = self.transactions['deadlock_occurred'].mean()
+                    st.metric("Overall Deadlock Risk", f"{deadlock_rate:.1%}")
+                else:
+                    st.metric("Overall Deadlock Risk", "N/A")
+            with col4:
+                if 'amount' in self.transactions.columns:
+                    avg_amount = self.transactions['amount'].mean()
+                    st.metric("Avg Amount", f"${avg_amount:,.0f}")
+                else:
+                    st.metric("Avg Amount", "N/A")
+            
+            # Sample data preview
+            st.markdown("#### Sample Transactions")
+            preview_cols = ['account_no', 'date', 'transaction_details', 'amount', 'transaction_type']
+            available_preview_cols = [col for col in preview_cols if col in self.transactions.columns]
+            
+            if available_preview_cols:
+                st.dataframe(self.transactions[available_preview_cols].head(8), use_container_width=True)
+            else:
+                st.info("No transaction data available for preview")
+        else:
+            st.error("No transaction data loaded. Please check your data file.")
 
 def main():
-    app = DeadlockDetectionApp()
-    app.render_sidebar()
-    app.render_main_content()
+    try:
+        app = BankStatementAnalyzer()
+        app.render_sidebar()
+        app.render_main()
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
+        st.info("Please check that all required files are in the correct locations.")
 
 if __name__ == "__main__":
     main()
