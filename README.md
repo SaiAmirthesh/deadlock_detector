@@ -2,6 +2,8 @@
 
 A machine learning-based deadlock detection system that compares performance across different algorithms with comprehensive timing analysis, specifically designed for banking transaction data.
 
+Live demo: https://deaddetector.streamlit.app/
+
 ## 🚀 Features
 
 ### ML Algorithms Comparison
